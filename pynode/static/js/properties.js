@@ -7,6 +7,9 @@ import { showToast } from './ui-utils.js';
 // Side-effect import: registers the window.* handlers used by the
 // `mqtt-service` property below (loadMqttServices, openMqttBrokerDialog, ...).
 import './mqtt-services.js';
+// Side-effect import: registers the window.* handlers used by the
+// `credential` property below (loadCredentialOptions, openCredentialDialog, ...).
+import './credentials.js';
 
 // Helper function to check if property should be shown
 function shouldShowProperty(showIf, config) {
@@ -270,6 +273,29 @@ export function renderProperties(nodeData) {
                 `;
                 // Load services after rendering
                 setTimeout(() => window.loadMqttServices(nodeData.id, prop.name, currentServiceId), 0);
+            } else if (prop.type === 'credential') {
+                // Credential selector: node config stores only the credential
+                // ID; the secret stays encrypted in the credential store and is
+                // never sent to the browser (see credentials.js).
+                const currentId = nodeData.config[prop.name] || '';
+                const credentialType = prop.credentialType || 'secret';
+                html += `
+                    <label class="property-label">${escapeHtml(prop.label)}</label>
+                    <div class="property-service-container">
+                        <select class="property-select property-service-select"
+                                id="credential-${nodeData.id}-${prop.name}"
+                                onchange="window.onCredentialSelect('${nodeData.id}', '${prop.name}', this.value)">
+                            <option value="">-- Select credential --</option>
+                        </select>
+                        <button class="btn btn-secondary property-service-btn property-service-manage"
+                                onclick="window.openCredentialDialog('${nodeData.id}', '${prop.name}', '${escapeHtml(credentialType)}')"
+                                title="Add, rename, replace or delete stored credentials">
+                            Manage…
+                        </button>
+                    </div>
+                `;
+                // Load the options after the panel's HTML is in the DOM.
+                setTimeout(() => window.loadCredentialOptions(nodeData.id, prop.name, credentialType, currentId), 0);
             } else if (prop.type === 'rules') {
                 html += renderRulesEditor(nodeData.id, prop.name, nodeData.config[prop.name] || []);
             } else if (prop.type === 'injectProps') {

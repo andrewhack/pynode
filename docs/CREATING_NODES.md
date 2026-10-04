@@ -246,6 +246,33 @@ Properties define the configuration UI shown when a node is selected.
 }
 ```
 
+### Credential (stored secret)
+
+Never put a secret (token, password, API key) in a `text` property. Node config is saved as plain text in `workflow.json`, its backups and exports, and is sent to the editor. Use a `credential` property instead: the config then holds only a credential ID, while the secret is stored encrypted in the credential store and never sent back to the browser.
+
+```python
+{
+    'name': 'credential',
+    'label': 'Credential',
+    'type': 'credential',
+    'credentialType': 'secret'   # core type: one secret value
+}
+```
+
+Resolve it when you need the value, and keep the result in memory only (never in `self.config`, a message or a log line):
+
+```python
+from pynode.nodes.base_node import CredentialError
+
+try:
+    token = self.get_credential(self.config.get('credential'))['value']
+except CredentialError as e:
+    self.report_error(str(e))   # not found, store locked, or wrong key
+    return
+```
+
+Node packages can register their own credential types (for example a username plus a password) with `pynode.credential_store.register_credential_type()`.
+
 ### Conditional Visibility (`showIf`)
 
 Show a property only when another property has a specific value:
