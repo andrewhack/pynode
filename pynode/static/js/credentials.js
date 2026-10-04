@@ -175,7 +175,7 @@ window.openCredentialDialog = async function (nodeId, propName, credentialType) 
         await refreshDialog(currentId);
     } catch (error) {
         console.error('Error opening credential dialog:', error);
-        showToast('Failed to load credentials', 'error');
+        showToast(error.message || 'Failed to load credentials', 'error');
         return;
     }
     document.getElementById('credential-dialog').style.display = 'flex';
@@ -192,6 +192,8 @@ window.onCredentialPick = async function (credentialId) {
 };
 
 window.closeCredentialDialog = function () {
+    // Drop any typed but unsaved secret instead of leaving it in the hidden dialog.
+    document.getElementById('credential-fields').replaceChildren();
     document.getElementById('credential-dialog').style.display = 'none';
     showResult(true, '');
 };
