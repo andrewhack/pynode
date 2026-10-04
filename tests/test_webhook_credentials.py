@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from pynode.credential_store import CredentialStore
+from pynode.credential_store import CREDENTIAL_TYPES, CredentialStore
 from pynode.nodes.WebhookNode.webhook_node import WebhookNode
 from pynode.workflow_engine import WorkflowEngine
 
@@ -118,6 +118,24 @@ def test_missing_credential_is_reported_at_start(tmp_path):
     node.on_stop()
     assert len(errors) == 1
     assert 'not found' in errors[0]
+
+
+def test_credential_of_another_type_fails_loudly(api_client, capture_server, monkeypatch):
+    monkeypatch.setitem(CREDENTIAL_TYPES, 'pair-test', {
+        'type': 'pair-test', 'label': 'Pair',
+        'fields': [{'name': 'user', 'label': 'User', 'secret': False},
+                   {'name': 'pw', 'label': 'Password', 'secret': True}]})
+    store = api_client.application.extensions['credential_store']
+    cred = store.create('pair', 'pair-test', {'user': 'u', 'pw': SECRET})
+    url, received = capture_server
+    _, node = _deploy_webhook(api_client, url, {'authType': 'bearer', 'credential': cred['id']})
+    errors = []
+    node.report_error = errors.append
+    node.on_input({'payload': 1})
+    assert received == []
+    assert node._error_count == 1
+    assert any("has no 'value' field" in e for e in errors)
+    assert not any(SECRET in e for e in errors)
 
 
 def test_secret_stays_out_of_workflow_json_and_api(api_client, capture_server):

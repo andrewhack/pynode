@@ -270,7 +270,7 @@ class WebhookNode(BaseNode):
         credential_id = self.config.get('credential', '')
         if credential_id and self.config.get('authType', 'none') != 'none':
             try:
-                self.get_credential(credential_id)
+                self._auth_value()
             except CredentialError as e:
                 self.report_error(str(e))
 
@@ -383,7 +383,12 @@ class WebhookNode(BaseNode):
         """
         credential_id = self.config.get('credential', '')
         if credential_id:
-            return self.get_credential(credential_id)['value']
+            values = self.get_credential(credential_id)
+            if 'value' not in values:
+                raise CredentialError(
+                    f"Credential '{credential_id}' has no 'value' field; "
+                    f"WebhookNode needs a credential of type 'secret'")
+            return values['value']
         return self.config.get('authCredentials', '')
 
     def _build_payload(self, msg: Dict[str, Any]) -> Any:
