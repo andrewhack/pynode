@@ -141,7 +141,7 @@ class TestCredentialApiFailures:
         assert api_client.get('/api/credentials').status_code == 401
         assert api_client.get('/api/credentials', headers={'X-API-Key': 'k'}).status_code == 200
 
-    # Review Focus 1, through the API
+    # Lost key file, through the API: 500, file untouched
     def test_locked_store_is_500_and_file_untouched(self, api_client):
         cred_id = _create_id(api_client)
         store = _store(api_client)
@@ -154,7 +154,7 @@ class TestCredentialApiFailures:
         with open(store.path, encoding='utf-8') as f:
             assert f.read() == before
 
-    # Review Focus 3, through the app
+    # Corrupt store file: the app still starts and serves workflows
     def test_corrupt_store_does_not_stop_the_app(self, tmp_path, monkeypatch):
         from pynode.server import create_app
 
