@@ -194,7 +194,7 @@ class CredentialStore:
     File format::
 
         {"version": 1,
-         "keyCheck": "<Fernet token>",      # present once a secret is stored
+         "keyCheck": "<Fernet token>",      # present while a secret is stored
          "credentials": [{"id", "name", "type",
                           "fields":  {non-secret name: value},
                           "secrets": {secret name: Fernet token}}]}
@@ -328,7 +328,10 @@ class CredentialStore:
             values = dict(entry.get('fields', {}))
             tokens = entry.get('secrets', {})
             if tokens:
-                fernet = self._fernet_for_read(data)
+                try:
+                    fernet = self._fernet_for_read(data)
+                except CredentialError as e:
+                    raise CredentialError(f"Credential '{entry['name']}' ({cred_id}): {e}") from None
                 for field_name, token in tokens.items():
                     try:
                         values[field_name] = fernet.decrypt(token.encode('ascii')).decode('utf-8')

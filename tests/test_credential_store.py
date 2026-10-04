@@ -201,7 +201,7 @@ class TestCredentialStore:
         assert store.resolve(cred['id']) == {'host': 'example.org'}
         assert not os.path.exists(store.key.default_key_file)
 
-    # Review Focus 2
+    # Wrong key: reads and writes refused, file untouched
     def test_wrong_key_fails_loudly_and_leaves_file_untouched(self, tmp_path):
         key_a = Fernet.generate_key().decode()
         key_b = Fernet.generate_key().decode()
@@ -216,7 +216,7 @@ class TestCredentialStore:
             store_b.update(cred['id'], fields={'value': 'other'})
         assert _raw(store_b) == before
 
-    # Review Focus 1
+    # Lost key file: locked, no new key generated, file untouched
     def test_lost_key_file_locks_the_store_without_regenerating(self, tmp_path):
         store = _store(tmp_path)
         cred = store.create('A', 'secret', {'value': SECRET})
@@ -228,6 +228,15 @@ class TestCredentialStore:
             store.create('B', 'secret', {'value': 'other'})
         assert not os.path.exists(store.key.default_key_file)
         assert _raw(store) == before
+
+    def test_key_errors_name_the_credential(self, tmp_path):
+        store = _store(tmp_path)
+        cred = store.create('Pushover', 'secret', {'value': SECRET})
+        os.remove(store.key.default_key_file)
+        with pytest.raises(CredentialError, match=r"Credential 'Pushover' \(") as exc:
+            store.resolve(cred['id'])
+        assert 'locked' in str(exc.value)
+        assert SECRET not in str(exc.value)
 
     def test_deleting_the_last_secret_lets_a_lost_key_store_start_over(self, tmp_path):
         store = _store(tmp_path)
@@ -246,7 +255,7 @@ class TestCredentialStore:
         with pytest.raises(CredentialError, match='locked'):
             store.create('C', 'secret', {'value': 'three'})
 
-    # Review Focus 3
+    # Corrupt file: fails loudly, never overwritten
     def test_corrupt_file_fails_loudly_and_is_never_overwritten(self, tmp_path):
         store = _store(tmp_path)
         os.makedirs(os.path.dirname(store.path))
@@ -258,7 +267,7 @@ class TestCredentialStore:
             store.create('A', 'secret', {'value': SECRET})
         assert _raw(store) == '{not json'
 
-    # Review Focus 3: hand-edited files with the wrong shape
+    # Hand-edited file with the wrong shape: fails loudly, never overwritten
     @pytest.mark.parametrize('content', [
         '[]',
         '{"credentials": {}}',
@@ -281,7 +290,7 @@ class TestCredentialStore:
             store.create('A', 'secret', {'value': SECRET})
         assert _raw(store) == content
 
-    # Review Focus 5
+    # Uninstalled credential type: listing still hides secrets
     def test_uninstalled_type_still_hides_secrets(self, tmp_path, monkeypatch):
         monkeypatch.setitem(CREDENTIAL_TYPES, 'mqtt-test', _MQTT_LIKE)
         store = _store(tmp_path)
