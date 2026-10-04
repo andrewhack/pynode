@@ -45,7 +45,7 @@ class _SinkNode(BaseNode):
 
 
 @pytest.fixture
-def api_app(tmp_path):
+def api_app(tmp_path, monkeypatch):
     """A fresh, fully sandboxed Flask app built via ``create_app``.
 
     - Every persistence/upload path points into tmp_path, so the real
@@ -58,6 +58,11 @@ def api_app(tmp_path):
       the test's tmp_path fixtures are torn down.
     """
     from pynode.server import create_app
+
+    # Credential key settings from the developer's shell must not leak into
+    # tests: every test app generates its own key under tmp_path.
+    monkeypatch.delenv('PYNODE_CREDENTIAL_KEY', raising=False)
+    monkeypatch.delenv('PYNODE_CREDENTIAL_KEY_FILE', raising=False)
 
     upload_base = tmp_path / 'upload_base'
     upload_base.mkdir()
