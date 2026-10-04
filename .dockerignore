@@ -20,3 +20,6 @@ build/
 .DS_Store
 logs/
 *.log
+# Credential store and its key: never bake them into an image
+workflows/credentials.json
+**/.credential_key
