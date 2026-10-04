@@ -9,7 +9,7 @@ and flexible payload configuration.
 import json
 import threading
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from urllib.parse import urlencode
 import time
 
@@ -24,9 +24,9 @@ except ImportError:
     import ssl
 
 try:
-    from ..base_node import BaseNode, MessageKeys, Info
+    from ..base_node import BaseNode, MessageKeys, Info, CredentialError
 except ImportError:
-    from base_node import BaseNode, MessageKeys, Info
+    from base_node import BaseNode, MessageKeys, Info, CredentialError
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,7 @@ class WebhookNode(BaseNode):
         'customPayload': '',
         'headers': '{}',
         'authType': 'none',
+        'credential': '',
         'authCredentials': '',
         'apiKeyHeader': 'X-API-Key',
         'timeout': 30,
@@ -175,6 +176,15 @@ class WebhookNode(BaseNode):
             'default': DEFAULT_CONFIG['authType']
         },
         {
+            'name': 'credential',
+            'label': 'Credential',
+            'type': 'credential',
+            'credentialType': 'secret',
+            'showIf': {'authType': ['basic', 'bearer', 'apikey']},
+            'default': DEFAULT_CONFIG['credential'],
+            'help': 'Stored encrypted and never shown again. Takes precedence over Auth Credentials.'
+        },
+        {
             'name': 'authCredentials',
             'label': 'Auth Credentials',
             'type': 'text',
@@ -249,7 +259,21 @@ class WebhookNode(BaseNode):
         self._request_count = 0
         self._success_count = 0
         self._error_count = 0
-    
+
+    def on_start(self):
+        """Start, and surface an unresolvable credential at deploy time.
+
+        Without this a missing credential (e.g. a flow imported from another
+        instance) would only show up when the first message arrives.
+        """
+        super().on_start()
+        credential_id = self.config.get('credential', '')
+        if credential_id and self.config.get('authType', 'none') != 'none':
+            try:
+                self.get_credential(credential_id)
+            except CredentialError as e:
+                self.report_error(str(e))
+
     def on_input(self, msg: Dict[str, Any], input_index: int = 0):
         """Handle incoming messages by making HTTP requests."""
         if self.config.get('async', True):
@@ -276,8 +300,14 @@ class WebhookNode(BaseNode):
         retries = int(self.config.get('retries', 0))
         retry_delay = int(self.config.get('retryDelay', 1000)) / 1000.0
         
-        # Build headers
-        headers = self._build_headers(msg, content_type)
+        # Build headers. A selected credential that cannot be resolved fails
+        # the request: never send it unauthenticated or with the legacy value.
+        try:
+            headers = self._build_headers(msg, content_type)
+        except CredentialError as e:
+            self._error_count += 1
+            self._handle_error(msg, e)
+            return
         
         # Build payload
         payload = self._build_payload(msg)
@@ -327,7 +357,7 @@ class WebhookNode(BaseNode):
         
         # Add authentication
         auth_type = self.config.get('authType', 'none')
-        credentials = self.config.get('authCredentials', '')
+        credentials = self._auth_value() if auth_type in ('basic', 'bearer', 'apikey') else ''
         
         if auth_type == 'basic' and credentials:
             import base64
@@ -342,7 +372,20 @@ class WebhookNode(BaseNode):
             headers[header_name] = credentials
         
         return headers
-    
+
+    def _auth_value(self) -> str:
+        """The secret for the Authorization / API-key header.
+
+        A selected credential (encrypted store) takes precedence; otherwise
+        the legacy plain-text authCredentials field is used so existing flows
+        keep working. Raises CredentialError when the selected credential
+        cannot be resolved.
+        """
+        credential_id = self.config.get('credential', '')
+        if credential_id:
+            return self.get_credential(credential_id)['value']
+        return self.config.get('authCredentials', '')
+
     def _build_payload(self, msg: Dict[str, Any]) -> Any:
         """Build request payload."""
         source = self.config.get('payloadSource', 'msg.payload')
