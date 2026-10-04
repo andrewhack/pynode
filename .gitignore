@@ -155,6 +155,9 @@ Thumbs.db
 # ...and the example Node-RED flow shipped with the SocketNode nodes
 !pynode/nodes/SocketNode/interop/*.json
 
+# Credential store key, generated next to credentials.json on first use
+.credential_key
+
 # PyTorch model files
 *.pt
 models/

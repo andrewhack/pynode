@@ -60,7 +60,7 @@ deploy:
 ### Persistent Storage
 
 The following directories are mounted for persistence:
-- `./workflows` - Saved workflows
+- `./workflows` - Saved workflows, plus the credential store (`credentials.json`) and, unless `PYNODE_CREDENTIAL_KEY` or `PYNODE_CREDENTIAL_KEY_FILE` is set, its generated key (`.credential_key`). Back up both files together.
 - `./logs` - Application logs
 
 ## Building

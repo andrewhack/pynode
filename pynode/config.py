@@ -22,6 +22,12 @@ Environment variables
 - ``PYNODE_CORS_ORIGINS``: comma-separated list of allowed CORS origins.
   Empty/unset = ``*`` (all origins). Overridden by the ``--cors-origins``
   CLI flag.
+- ``PYNODE_CREDENTIAL_KEY``: Fernet key that encrypts the secrets in the
+  credential store (``<workflows dir>/credentials.json``). Takes precedence
+  over ``PYNODE_CREDENTIAL_KEY_FILE``. See :mod:`pynode.credential_store`.
+- ``PYNODE_CREDENTIAL_KEY_FILE``: path to a file holding that key. With
+  neither variable set, PyNode generates ``<workflows dir>/.credential_key``
+  on first use.
 """
 
 import os
@@ -31,6 +37,8 @@ ENV_DATA_DIR = 'PYNODE_DATA_DIR'
 ENV_MODELS_DIR = 'PYNODE_MODELS_DIR'
 ENV_API_KEY = 'PYNODE_API_KEY'
 ENV_CORS_ORIGINS = 'PYNODE_CORS_ORIGINS'
+ENV_CREDENTIAL_KEY = 'PYNODE_CREDENTIAL_KEY'
+ENV_CREDENTIAL_KEY_FILE = 'PYNODE_CREDENTIAL_KEY_FILE'
 
 # Package directory (static files, package-relative uploads).
 PKG_DIR = os.path.dirname(os.path.abspath(__file__))
