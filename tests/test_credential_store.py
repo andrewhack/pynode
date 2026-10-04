@@ -228,6 +228,23 @@ class TestCredentialStore:
         assert not os.path.exists(store.key.default_key_file)
         assert _raw(store) == before
 
+    def test_deleting_the_last_secret_lets_a_lost_key_store_start_over(self, tmp_path):
+        store = _store(tmp_path)
+        cred = store.create('A', 'secret', {'value': SECRET})
+        os.remove(store.key.default_key_file)
+        assert store.delete(cred['id']) is True
+        fresh = store.create('B', 'secret', {'value': 'fresh'})
+        assert store.resolve(fresh['id']) == {'value': 'fresh'}
+
+    def test_key_check_stays_while_secrets_remain(self, tmp_path):
+        store = _store(tmp_path)
+        first = store.create('A', 'secret', {'value': 'one'})
+        store.create('B', 'secret', {'value': 'two'})
+        os.remove(store.key.default_key_file)
+        store.delete(first['id'])
+        with pytest.raises(CredentialError, match='locked'):
+            store.create('C', 'secret', {'value': 'three'})
+
     # Review Focus 3
     def test_corrupt_file_fails_loudly_and_is_never_overwritten(self, tmp_path):
         store = _store(tmp_path)
@@ -239,6 +256,29 @@ class TestCredentialStore:
         with pytest.raises(CredentialError, match='Cannot read'):
             store.create('A', 'secret', {'value': SECRET})
         assert _raw(store) == '{not json'
+
+    # Review Focus 3: hand-edited files with the wrong shape
+    @pytest.mark.parametrize('content', [
+        '[]',
+        '{"credentials": {}}',
+        '{"credentials": ["not-a-dict"]}',
+        '{"credentials": [{"id": "a", "type": "secret", "fields": {}, "secrets": {}}]}',
+        '{"credentials": [{"id": "a", "name": "A", "type": "secret", "secrets": ["x"]}]}',
+        '{"credentials": [{"id": "a", "name": "A", "type": "secret", "secrets": "hunter2"}]}',
+        '{"credentials": [{"id": "a", "name": "A", "type": "secret", "fields": {"user": 1}}]}',
+        '{"keyCheck": 5, "credentials": []}',
+    ])
+    def test_hand_edited_file_with_wrong_shape_fails_loudly(self, tmp_path, content):
+        store = _store(tmp_path)
+        os.makedirs(os.path.dirname(store.path))
+        with open(store.path, 'w') as f:
+            f.write(content)
+        with pytest.raises(CredentialError, match='unexpected format') as exc:
+            store.list()
+        assert 'hunter2' not in str(exc.value)
+        with pytest.raises(CredentialError, match='unexpected format'):
+            store.create('A', 'secret', {'value': SECRET})
+        assert _raw(store) == content
 
     # Review Focus 5
     def test_uninstalled_type_still_hides_secrets(self, tmp_path, monkeypatch):

@@ -13,8 +13,10 @@ The key is resolved in this order (first match wins):
    while the store holds no encrypted data yet.
 
 The store fails loudly instead of guessing. A missing or wrong key raises
-``CredentialError``, and ``credentials.json`` is never rewritten in that
-state, so a new key can never be mixed into an existing store.
+``CredentialError`` for anything that reads or stores a secret, and nothing
+is written in that case, so a new key can never be mixed into an existing
+store. Renames and deletes need no key; deleting the last secret also drops
+the key check, so a store whose key was lost can start over.
 """
 
 import copy
@@ -305,6 +307,10 @@ class CredentialStore:
             if entry is None:
                 return False
             data['credentials'].remove(entry)
+            # With no secret left there is nothing a key could orphan: drop the
+            # keyCheck so a store whose key was lost can start over with a new key.
+            if not any(e.get('secrets') for e in data['credentials']):
+                data.pop('keyCheck', None)
             self._write(data)
             return True
 
@@ -349,7 +355,10 @@ class CredentialStore:
                         data = json.load(f)
                 except (OSError, ValueError) as e:
                     raise CredentialError(f"Cannot read credential store {self.path}: {e}") from None
-                if not isinstance(data, dict) or not isinstance(data.get('credentials'), list):
+                if (not isinstance(data, dict)
+                        or not isinstance(data.get('credentials'), list)
+                        or not isinstance(data.get('keyCheck', ''), str)
+                        or not all(_valid_entry(entry) for entry in data['credentials'])):
                     raise CredentialError(f"Cannot read credential store {self.path}: unexpected format")
                 self._data = data
         return self._data
@@ -424,6 +433,20 @@ def _public(entry: Dict[str, Any]) -> Dict[str, Any]:
         'fields': dict(entry.get('fields', {})),
         'secretsSet': sorted(entry.get('secrets', {})),
     }
+
+
+def _valid_entry(entry: Any) -> bool:
+    """True when a stored credential has the shape this module writes."""
+    if not isinstance(entry, dict):
+        return False
+    if not all(isinstance(entry.get(key), str) for key in ('id', 'name', 'type')):
+        return False
+    for key in ('fields', 'secrets'):
+        value = entry.get(key, {})
+        if not isinstance(value, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+            return False
+    return True
 
 
 def _clean_name(name: Any) -> str:
