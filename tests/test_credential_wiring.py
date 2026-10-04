@@ -18,6 +18,25 @@ class _CredNode(BaseNode):
                    'credentialType': 'secret'}]
 
 
+class _DynamicCredNode(BaseNode):
+    """Builds its properties dynamically and counts how often it is asked."""
+    calls = 0
+
+    @classmethod
+    def get_properties(cls):
+        cls.calls += 1
+        return [{'name': 'cred', 'label': 'Credential', 'type': 'credential',
+                 'credentialType': 'secret'}]
+
+
+class _BrokenPropsNode(BaseNode):
+    """A node whose dynamic properties fail (e.g. a device probe raising)."""
+
+    @classmethod
+    def get_properties(cls):
+        raise RuntimeError('probe failed')
+
+
 def _store(api_app):
     return api_app.extensions['credential_store']
 
@@ -72,6 +91,38 @@ def test_credential_usage_counts_each_node_once(api_app, manager):
     # ...and a node in another workflow adds one.
     manager.working_engines[wid_b].create_node('_CredNode', 'n2', config={'cred': cred['id']})
     assert manager.credential_usage() == {cred['id']: 2}
+
+
+def test_credential_usage_reads_dynamic_properties_once_per_class(api_app, manager):
+    cred = _store(api_app).create('A', 'secret', {'value': 'tok'})
+    wid = manager.create_new_workflow(name='dynamic')
+    engine = manager.working_engines[wid]
+    engine.register_node_type(_DynamicCredNode)
+    engine.create_node('_DynamicCredNode', 'd1', config={'cred': cred['id']})
+    engine.create_node('_DynamicCredNode', 'd2', config={'cred': cred['id']})
+    manager.credential_usage()
+    assert manager.credential_usage() == {cred['id']: 2}
+    assert _DynamicCredNode.calls == 1
+
+
+def test_credential_usage_skips_nodes_whose_properties_fail(api_app, manager):
+    cred = _store(api_app).create('A', 'secret', {'value': 'tok'})
+    wid = manager.create_new_workflow(name='broken')
+    engine = manager.working_engines[wid]
+    engine.register_node_type(_BrokenPropsNode)
+    engine.register_node_type(_CredNode)
+    engine.create_node('_BrokenPropsNode', 'b1', config={})
+    engine.create_node('_CredNode', 'c1', config={'cred': cred['id']})
+    assert manager.credential_usage() == {cred['id']: 1}
+
+
+def test_credential_usage_ignores_non_string_values(manager):
+    wid = manager.create_new_workflow(name='odd values')
+    engine = manager.working_engines[wid]
+    engine.register_node_type(_CredNode)
+    engine.create_node('_CredNode', 'n1', config={'cred': ['not', 'an', 'id']})
+    engine.create_node('_CredNode', 'n2', config={'cred': ''})
+    assert manager.credential_usage() == {}
 
 
 def test_manager_without_store(tmp_path):

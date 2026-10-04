@@ -37,12 +37,27 @@ BASE_DIR = config.CHECKOUT_DIR
 MAX_BACKUPS = 20
 
 
+# Node class -> names of its 'credential' properties. Computed once per class:
+# some classes build properties dynamically (get_properties probes engines
+# and devices), and credential property names never change at runtime.
+_credential_names_by_class = {}
+
+
 def _credential_property_names(node):
     """Names of a node's properties of type 'credential' (see node_registry)."""
-    getter = getattr(node, 'get_properties', None)
-    props = getter() if callable(getter) else getattr(node, 'properties', [])
-    return [p['name'] for p in (props or [])
-            if isinstance(p, dict) and p.get('type') == 'credential' and p.get('name')]
+    cls = type(node)
+    names = _credential_names_by_class.get(cls)
+    if names is None:
+        try:
+            getter = getattr(cls, 'get_properties', None)
+            props = getter() if callable(getter) else getattr(cls, 'properties', [])
+        except Exception as e:
+            logger.warning(f"Cannot read properties of {cls.__name__}: {e}")
+            props = []
+        names = [p['name'] for p in (props or [])
+                 if isinstance(p, dict) and p.get('type') == 'credential' and p.get('name')]
+        _credential_names_by_class[cls] = names
+    return names
 
 
 class WorkflowManager:
@@ -141,7 +156,7 @@ class WorkflowManager:
                 for prop_name in _credential_property_names(node):
                     cred_id = node.config.get(prop_name)
                     key = (wid, node.id, prop_name)
-                    if cred_id and key not in seen:
+                    if isinstance(cred_id, str) and cred_id and key not in seen:
                         seen.add(key)
                         usage[cred_id] = usage.get(cred_id, 0) + 1
         return usage
