@@ -17,11 +17,15 @@ The store fails loudly instead of guessing. A missing or wrong key raises
 state, so a new key can never be mixed into an existing store.
 """
 
+import copy
+import json
 import logging
 import os
-from typing import Mapping, Optional
+import threading
+import uuid
+from typing import Any, Dict, List, Mapping, Optional
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 from pynode.config import ENV_CREDENTIAL_KEY, ENV_CREDENTIAL_KEY_FILE
 
@@ -127,3 +131,318 @@ class CredentialKey:
             f"decrypted. Set {ENV_CREDENTIAL_KEY} or {ENV_CREDENTIAL_KEY_FILE} to keep "
             f"the key outside the data directory.")
         return key
+
+
+STORE_VERSION = 1
+
+# Encrypted under the active key when the first secret is stored. Decrypting
+# it proves the key is the one that encrypted this store before any read or
+# write touches a secret.
+_KEY_CHECK_PLAINTEXT = b'pynode-credential-store'
+
+# Credential types: {type name: {'type', 'label', 'fields': [{'name', 'label',
+# 'secret'}]}}. Process-wide and static, like the node-type registries. Node
+# packages add their own with register_credential_type().
+CREDENTIAL_TYPES: Dict[str, Dict[str, Any]] = {}
+
+
+def register_credential_type(type_name: str, label: str, fields: List[Dict[str, Any]]) -> None:
+    """Register (or replace) a credential type.
+
+    Args:
+        type_name: identifier stored with each credential and referenced by a
+            node property's ``credentialType``.
+        label: human-readable name for the editor.
+        fields: ``[{'name': str, 'label': str, 'secret': bool}, ...]``. Secret
+            fields are encrypted at rest and never returned by the API.
+    """
+    names = [field.get('name') for field in fields]
+    if not names or not all(names) or len(set(names)) != len(names):
+        raise ValueError(f"Credential type '{type_name}' needs unique, non-empty field names")
+    CREDENTIAL_TYPES[type_name] = {
+        'type': type_name,
+        'label': label,
+        'fields': [
+            {'name': field['name'], 'label': field.get('label', field['name']),
+             'secret': bool(field.get('secret', False))}
+            for field in fields
+        ],
+    }
+
+
+def list_credential_types() -> List[Dict[str, Any]]:
+    """Every registered credential type (copies, safe to serialise or mutate)."""
+    return copy.deepcopy(list(CREDENTIAL_TYPES.values()))
+
+
+# Core ships one type: a single secret value (an API token, a password, or a
+# 'user:password' string for basic auth).
+register_credential_type('secret', 'Secret', [
+    {'name': 'value', 'label': 'Secret', 'secret': True},
+])
+
+
+class CredentialStore:
+    """Encrypted credentials, referenced by ID from node config.
+
+    One instance per app (``app.extensions['credential_store']``); nodes
+    reach it through their engine (``BaseNode.get_credential``). The file is
+    read lazily on first use, so building a store never touches the disk.
+
+    File format::
+
+        {"version": 1,
+         "keyCheck": "<Fernet token>",      # present once a secret is stored
+         "credentials": [{"id", "name", "type",
+                          "fields":  {non-secret name: value},
+                          "secrets": {secret name: Fernet token}}]}
+
+    The fields/secrets split is decided when a value is written, so a
+    listing never depends on the type registry to know what is secret.
+    """
+
+    def __init__(self, path: str, key_file: Optional[str] = None,
+                 environ: Optional[Mapping[str, str]] = None):
+        self.path = path
+        self.key = CredentialKey(
+            key_file or os.path.join(os.path.dirname(path), KEY_FILE_NAME), environ)
+        # Guards _data and the file: API threads and node worker threads
+        # call into the same store.
+        self._lock = threading.RLock()
+        self._data: Optional[Dict[str, Any]] = None
+
+    # -- public API ---------------------------------------------------------
+
+    def list(self) -> List[Dict[str, Any]]:
+        """Public view of every credential (never includes a secret value)."""
+        with self._lock:
+            return [_public(entry) for entry in self._load()['credentials']]
+
+    def get(self, cred_id: str) -> Optional[Dict[str, Any]]:
+        """Public view of one credential, or None if it does not exist."""
+        with self._lock:
+            entry = _find(self._load(), cred_id)
+            return _public(entry) if entry else None
+
+    def create(self, name: str, type_name: str, fields: Mapping[str, Any]) -> Dict[str, Any]:
+        """Create a credential and return its public view.
+
+        Raises:
+            ValueError: invalid name, type or fields (a client error).
+            CredentialError: the key is missing or wrong, or the store is unreadable.
+        """
+        name = _clean_name(name)
+        type_def = CREDENTIAL_TYPES.get(type_name)
+        if type_def is None:
+            raise ValueError(f"Unknown credential type: {type_name!r}")
+        values = _check_fields(type_def, fields)
+        entry: Dict[str, Any] = {'id': uuid.uuid4().hex, 'name': name, 'type': type_name,
+                                 'fields': {}, 'secrets': {}}
+        secrets: Dict[str, str] = {}
+        for field in type_def['fields']:
+            value = values.get(field['name'], '')
+            if field['secret']:
+                if not value:
+                    raise ValueError(f"'{field['label']}' is required")
+                secrets[field['name']] = value
+            else:
+                entry['fields'][field['name']] = value
+        with self._lock:
+            data = copy.deepcopy(self._load())
+            if secrets:
+                fernet = self._fernet_for_write(data)
+                entry['secrets'] = {k: _encrypt(fernet, v) for k, v in secrets.items()}
+            data['credentials'].append(entry)
+            self._write(data)
+            return _public(entry)
+
+    def update(self, cred_id: str, name: Optional[str] = None,
+               fields: Optional[Mapping[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Rename a credential and/or change its fields; None if it does not exist.
+
+        A secret field that is missing or empty keeps its stored value, so the
+        editor can save without ever having seen the secret. The type cannot
+        change.
+
+        Raises:
+            ValueError: invalid name or fields (a client error).
+            CredentialError: the key is missing or wrong, or the store is unreadable.
+        """
+        with self._lock:
+            data = copy.deepcopy(self._load())
+            entry = _find(data, cred_id)
+            if entry is None:
+                return None
+            if name is not None:
+                entry['name'] = _clean_name(name)
+            if fields:
+                type_def = CREDENTIAL_TYPES.get(entry['type'])
+                if type_def is None:
+                    raise ValueError(f"Credential type {entry['type']!r} is not installed")
+                values = _check_fields(type_def, fields)
+                new_secrets: Dict[str, str] = {}
+                for field in type_def['fields']:
+                    if field['name'] not in values:
+                        continue
+                    value = values[field['name']]
+                    if field['secret']:
+                        if value:
+                            new_secrets[field['name']] = value
+                    else:
+                        entry.setdefault('fields', {})[field['name']] = value
+                if new_secrets:
+                    fernet = self._fernet_for_write(data)
+                    entry.setdefault('secrets', {}).update(
+                        {k: _encrypt(fernet, v) for k, v in new_secrets.items()})
+            self._write(data)
+            return _public(entry)
+
+    def delete(self, cred_id: str) -> bool:
+        """Delete a credential; False if it does not exist. Callers check usage first."""
+        with self._lock:
+            data = copy.deepcopy(self._load())
+            entry = _find(data, cred_id)
+            if entry is None:
+                return False
+            data['credentials'].remove(entry)
+            self._write(data)
+            return True
+
+    def resolve(self, cred_id: str) -> Dict[str, str]:
+        """Every field of a credential, with secret fields decrypted.
+
+        Raises:
+            CredentialError: not found, store locked, wrong key or unreadable store.
+        """
+        with self._lock:
+            data = self._load()
+            entry = _find(data, cred_id)
+            if entry is None:
+                raise CredentialError(f"Credential '{cred_id}' not found")
+            values = dict(entry.get('fields', {}))
+            tokens = entry.get('secrets', {})
+            if tokens:
+                fernet = self._fernet_for_read(data)
+                for field_name, token in tokens.items():
+                    try:
+                        values[field_name] = fernet.decrypt(token.encode('ascii')).decode('utf-8')
+                    except (InvalidToken, ValueError, AttributeError):
+                        raise CredentialError(
+                            f"Credential '{entry.get('name')}' ({cred_id}) cannot be "
+                            f"decrypted with the current key") from None
+            return values
+
+    # -- internals ----------------------------------------------------------
+
+    def _load(self) -> Dict[str, Any]:
+        """The store contents, read from disk on first use.
+
+        An unreadable file raises CredentialError on every call and is never
+        overwritten, because every write starts from a successful load.
+        """
+        if self._data is None:
+            if not os.path.exists(self.path):
+                self._data = {'version': STORE_VERSION, 'credentials': []}
+            else:
+                try:
+                    with open(self.path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                except (OSError, ValueError) as e:
+                    raise CredentialError(f"Cannot read credential store {self.path}: {e}") from None
+                if not isinstance(data, dict) or not isinstance(data.get('credentials'), list):
+                    raise CredentialError(f"Cannot read credential store {self.path}: unexpected format")
+                self._data = data
+        return self._data
+
+    def _write(self, data: Dict[str, Any]) -> None:
+        """Atomically replace the file, then adopt ``data`` as the in-memory state.
+
+        Callers mutate a deep copy and pass it here, so a failed write leaves
+        both the file and the in-memory state as they were.
+        """
+        directory = os.path.dirname(self.path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        tmp_path = self.path + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, self.path)
+        self._data = data
+
+    def _fernet_for_write(self, data: Dict[str, Any]) -> Fernet:
+        """Key for encrypting into ``data``; stamps keyCheck when the first secret is stored."""
+        if data.get('keyCheck'):
+            fernet = self.key.get(create=False)
+            self._verify_key(fernet, data)
+            return fernet
+        if any(entry.get('secrets') for entry in data['credentials']):
+            raise CredentialError(f"{self.path} holds secrets but no keyCheck (edited by hand?)")
+        fernet = self.key.get(create=True)
+        data['keyCheck'] = _encrypt(fernet, _KEY_CHECK_PLAINTEXT.decode('ascii'))
+        return fernet
+
+    def _fernet_for_read(self, data: Dict[str, Any]) -> Fernet:
+        if not data.get('keyCheck'):
+            raise CredentialError(f"{self.path} holds secrets but no keyCheck (edited by hand?)")
+        fernet = self.key.get(create=False)
+        self._verify_key(fernet, data)
+        return fernet
+
+    def _verify_key(self, fernet: Fernet, data: Dict[str, Any]) -> None:
+        try:
+            matches = fernet.decrypt(data['keyCheck'].encode('ascii')) == _KEY_CHECK_PLAINTEXT
+        except (InvalidToken, ValueError, AttributeError):
+            matches = False
+        if not matches:
+            raise CredentialError(
+                f"The credential key does not match {self.path}. Check {ENV_CREDENTIAL_KEY}, "
+                f"{ENV_CREDENTIAL_KEY_FILE} and {self.key.default_key_file}")
+
+
+def _encrypt(fernet: Fernet, value: str) -> str:
+    return fernet.encrypt(value.encode('utf-8')).decode('ascii')
+
+
+def _find(data: Dict[str, Any], cred_id: str) -> Optional[Dict[str, Any]]:
+    for entry in data['credentials']:
+        if entry.get('id') == cred_id:
+            return entry
+    return None
+
+
+def _public(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """The client-safe view of a stored credential.
+
+    Built from the file's own fields/secrets split, not from the type
+    registry, so a credential whose type's package was uninstalled still
+    never exposes a secret.
+    """
+    return {
+        'id': entry['id'],
+        'name': entry['name'],
+        'type': entry['type'],
+        'fields': dict(entry.get('fields', {})),
+        'secretsSet': sorted(entry.get('secrets', {})),
+    }
+
+
+def _clean_name(name: Any) -> str:
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError('Credential name is required')
+    return name.strip()
+
+
+def _check_fields(type_def: Dict[str, Any], fields: Any) -> Dict[str, str]:
+    """Validate submitted field values against a type and return them as a plain dict.
+
+    Error messages name fields, never values.
+    """
+    if not isinstance(fields, Mapping):
+        raise ValueError('fields must be an object')
+    known = {field['name'] for field in type_def['fields']}
+    for field_name, value in fields.items():
+        if field_name not in known:
+            raise ValueError(f"Unknown field for credential type '{type_def['type']}': {field_name!r}")
+        if not isinstance(value, str):
+            raise ValueError(f"Field {field_name!r} must be a string")
+    return dict(fields)
