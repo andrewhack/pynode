@@ -234,7 +234,7 @@ class CredentialStore:
             CredentialError: the key is missing or wrong, or the store is unreadable.
         """
         name = _clean_name(name)
-        type_def = CREDENTIAL_TYPES.get(type_name)
+        type_def = CREDENTIAL_TYPES.get(type_name) if isinstance(type_name, str) else None
         if type_def is None:
             raise ValueError(f"Unknown credential type: {type_name!r}")
         values = _check_fields(type_def, fields)

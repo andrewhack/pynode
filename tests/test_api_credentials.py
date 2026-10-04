@@ -103,6 +103,8 @@ class TestCredentialCrud:
         {'name': 'A', 'type': 'secret', 'fields': {}},
         {'name': 'A', 'type': 'secret', 'fields': {'value': 'x', 'other': 'y'}},
         {'name': 'A', 'type': 'secret', 'fields': ['x']},
+        {'name': 'A', 'type': ['secret'], 'fields': {'value': 'x'}},
+        {'name': 'A', 'type': {'a': 1}, 'fields': {'value': 'x'}},
     ])
     def test_create_validation_is_400(self, api_client, body):
         resp = api_client.post('/api/credentials', json=body)

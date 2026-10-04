@@ -184,6 +184,7 @@ class TestCredentialStore:
         ('A', 'secret', {'value': 'x', 'extra': 'y'}),
         ('A', 'secret', {'value': 123}),
         ('A', 'secret', ['value']),
+        ('A', ['secret'], {'value': 'x'}),
     ])
     def test_create_rejects_invalid_input(self, tmp_path, name, type_name, fields):
         store = _store(tmp_path)
