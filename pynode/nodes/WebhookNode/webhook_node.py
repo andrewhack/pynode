@@ -55,6 +55,21 @@ _info.add_bullets(
 )
 
 
+def _header_safe(value: str) -> bool:
+    """True if ``value`` can go into an HTTP header verbatim.
+
+    Transports reject anything else with an exception that quotes the whole
+    header, which would carry a stored secret into logs and error output.
+    """
+    if value != value.strip() or '\r' in value or '\n' in value:
+        return False
+    try:
+        value.encode('latin-1')
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 class WebhookNode(BaseNode):
     """
     Webhook Node - Sends HTTP requests to external services.
@@ -182,7 +197,7 @@ class WebhookNode(BaseNode):
             'credentialType': 'secret',
             'showIf': {'authType': ['basic', 'bearer', 'apikey']},
             'default': DEFAULT_CONFIG['credential'],
-            'help': 'Stored encrypted and never shown again. Takes precedence over Auth Credentials.'
+            'help': 'Stored encrypted and never shown again. Takes precedence over Auth Credentials; clear that field once a credential is selected, because its value is saved in plain text.'
         },
         {
             'name': 'authCredentials',
@@ -379,7 +394,9 @@ class WebhookNode(BaseNode):
         A selected credential (encrypted store) takes precedence; otherwise
         the legacy plain-text authCredentials field is used so existing flows
         keep working. Raises CredentialError when the selected credential
-        cannot be resolved.
+        cannot be resolved. A bearer or API-key credential whose value cannot
+        go into a header verbatim also raises CredentialError, so the value
+        never reaches a transport error message.
         """
         credential_id = self.config.get('credential', '')
         if credential_id:
@@ -388,7 +405,14 @@ class WebhookNode(BaseNode):
                 raise CredentialError(
                     f"Credential '{credential_id}' has no 'value' field; "
                     f"WebhookNode needs a credential of type 'secret'")
-            return values['value']
+            value = values['value']
+            if (self.config.get('authType', 'none') in ('bearer', 'apikey')
+                    and not _header_safe(value)):
+                raise CredentialError(
+                    f"Credential '{credential_id}' contains characters an HTTP header "
+                    f"cannot carry (leading or trailing spaces, line breaks or "
+                    f"non-Latin-1 characters)")
+            return value
         return self.config.get('authCredentials', '')
 
     def _build_payload(self, msg: Dict[str, Any]) -> Any:
