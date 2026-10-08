@@ -38,8 +38,9 @@ def get_credential_types():
 def list_credentials():
     """List credentials (public view only)."""
     try:
-        usage = _get_manager().credential_usage()
-        credentials = [_with_usage(c, usage) for c in _store().list()]
+        credentials = _store().list()
+        usage = _get_manager().credential_usage([c['id'] for c in credentials])
+        credentials = [_with_usage(c, usage) for c in credentials]
     except CredentialError as e:
         return _json_error(str(e), 500)
     return jsonify({'success': True, 'credentials': credentials})
@@ -75,7 +76,7 @@ def update_credential(cred_id):
     if credential is None:
         return _json_error('Credential not found', 404)
     return jsonify({'success': True,
-                    'credential': _with_usage(credential, _get_manager().credential_usage())})
+                    'credential': _with_usage(credential, _get_manager().credential_usage([cred_id]))})
 
 
 @credentials_bp.route('/api/credentials/<cred_id>', methods=['DELETE'])
@@ -85,7 +86,7 @@ def delete_credential(cred_id):
     try:
         if store.get(cred_id) is None:
             return _json_error('Credential not found', 404)
-        in_use = _get_manager().credential_usage().get(cred_id, 0)
+        in_use = _get_manager().credential_usage([cred_id]).get(cred_id, 0)
         if in_use:
             return _json_error(f'Credential is used by {in_use} node(s)', 409)
         store.delete(cred_id)

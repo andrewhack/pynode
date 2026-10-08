@@ -87,42 +87,74 @@ def test_credential_usage_counts_each_node_once(api_app, manager):
     # The same node in the working and deployed engines counts once...
     manager.working_engines[wid_a].create_node('_CredNode', 'n1', config={'cred': cred['id']})
     manager.deployed_engines[wid_a].create_node('_CredNode', 'n1', config={'cred': cred['id']})
-    assert manager.credential_usage() == {cred['id']: 1}
+    assert manager.credential_usage([cred['id']]) == {cred['id']: 1}
     # ...and a node in another workflow adds one.
     manager.working_engines[wid_b].create_node('_CredNode', 'n2', config={'cred': cred['id']})
-    assert manager.credential_usage() == {cred['id']: 2}
+    assert manager.credential_usage([cred['id']]) == {cred['id']: 2}
 
 
-def test_credential_usage_reads_dynamic_properties_once_per_class(api_app, manager):
+def test_credential_usage_never_asks_nodes_for_their_properties(api_app, manager):
+    # Some nodes build their properties dynamically (device probes); usage
+    # must not depend on that, or on it succeeding.
+    _DynamicCredNode.calls = 0
     cred = _store(api_app).create('A', 'secret', {'value': 'tok'})
     wid = manager.create_new_workflow(name='dynamic')
     engine = manager.working_engines[wid]
     engine.register_node_type(_DynamicCredNode)
     engine.create_node('_DynamicCredNode', 'd1', config={'cred': cred['id']})
     engine.create_node('_DynamicCredNode', 'd2', config={'cred': cred['id']})
-    manager.credential_usage()
-    assert manager.credential_usage() == {cred['id']: 2}
-    assert _DynamicCredNode.calls == 1
+    assert manager.credential_usage([cred['id']]) == {cred['id']: 2}
+    assert _DynamicCredNode.calls == 0
 
 
-def test_credential_usage_skips_nodes_whose_properties_fail(api_app, manager):
+def test_credential_usage_counts_a_node_whose_properties_cannot_be_read(api_app, manager):
+    # Fail closed: a reference still counts, so the delete guard holds.
     cred = _store(api_app).create('A', 'secret', {'value': 'tok'})
     wid = manager.create_new_workflow(name='broken')
     engine = manager.working_engines[wid]
     engine.register_node_type(_BrokenPropsNode)
+    engine.create_node('_BrokenPropsNode', 'b1', config={'cred': cred['id']})
+    assert manager.credential_usage([cred['id']]) == {cred['id']: 1}
+
+
+def test_credential_usage_finds_references_in_nested_values(api_app, manager):
+    cred = _store(api_app).create('A', 'secret', {'value': 'tok'})
+    wid = manager.create_new_workflow(name='nested')
+    engine = manager.working_engines[wid]
     engine.register_node_type(_CredNode)
-    engine.create_node('_BrokenPropsNode', 'b1', config={})
-    engine.create_node('_CredNode', 'c1', config={'cred': cred['id']})
-    assert manager.credential_usage() == {cred['id']: 1}
+    engine.create_node('_CredNode', 'n1', config={'auth': {'tokens': ['other', cred['id']]}})
+    assert manager.credential_usage([cred['id']]) == {cred['id']: 1}
 
 
-def test_credential_usage_ignores_non_string_values(manager):
+def test_credential_usage_counts_placeholder_nodes_of_missing_types(api_app, manager):
+    # A node whose type isn't installed keeps its config and still counts.
+    cred = _store(api_app).create('A', 'secret', {'value': 'tok'})
+    wid = manager.create_new_workflow(name='missing type')
+    manager.working_engines[wid].import_workflow({
+        'nodes': [{'id': 'u1', 'type': 'NotInstalledNode', 'config': {'cred': cred['id']}}],
+        'connections': [],
+    })
+    assert manager.credential_usage([cred['id']]) == {cred['id']: 1}
+
+
+def test_credential_usage_reports_only_the_requested_ids(api_app, manager):
+    store = _store(api_app)
+    wanted = store.create('A', 'secret', {'value': 'one'})
+    other = store.create('B', 'secret', {'value': 'two'})
+    wid = manager.create_new_workflow(name='two creds')
+    engine = manager.working_engines[wid]
+    engine.register_node_type(_CredNode)
+    engine.create_node('_CredNode', 'n1', config={'cred': wanted['id'], 'spare': other['id']})
+    assert manager.credential_usage([wanted['id']]) == {wanted['id']: 1}
+
+
+def test_credential_usage_tolerates_odd_config_values(manager):
     wid = manager.create_new_workflow(name='odd values')
     engine = manager.working_engines[wid]
     engine.register_node_type(_CredNode)
     engine.create_node('_CredNode', 'n1', config={'cred': ['not', 'an', 'id']})
-    engine.create_node('_CredNode', 'n2', config={'cred': ''})
-    assert manager.credential_usage() == {}
+    engine.create_node('_CredNode', 'n2', config={'cred': '', 'n': 3, 'x': None, 'd': {'k': 1.5}})
+    assert manager.credential_usage(['f' * 32]) == {}
 
 
 def test_manager_without_store(tmp_path):
@@ -130,6 +162,6 @@ def test_manager_without_store(tmp_path):
     try:
         wid = mgr.create_new_workflow(name='wf')
         assert mgr.working_engines[wid].credential_store is None
-        assert mgr.credential_usage() == {}
+        assert mgr.credential_usage([]) == {}
     finally:
         mgr.shutdown()

@@ -37,27 +37,20 @@ BASE_DIR = config.CHECKOUT_DIR
 MAX_BACKUPS = 20
 
 
-# Node class -> names of its 'credential' properties. Computed once per class:
-# some classes build properties dynamically (get_properties probes engines
-# and devices), and credential property names never change at runtime.
-_credential_names_by_class = {}
+def _strings_in(value):
+    """Every string in a node config value, walking nested dicts and lists.
 
-
-def _credential_property_names(node):
-    """Names of a node's properties of type 'credential' (see node_registry)."""
-    cls = type(node)
-    names = _credential_names_by_class.get(cls)
-    if names is None:
-        try:
-            getter = getattr(cls, 'get_properties', None)
-            props = getter() if callable(getter) else getattr(cls, 'properties', [])
-        except Exception as e:
-            logger.warning(f"Cannot read properties of {cls.__name__}: {e}")
-            props = []
-        names = [p['name'] for p in (props or [])
-                 if isinstance(p, dict) and p.get('type') == 'credential' and p.get('name')]
-        _credential_names_by_class[cls] = names
-    return names
+    Each level is copied before it is walked (a C-level copy under the GIL),
+    so a concurrent configure() cannot make the walk fail mid-iteration.
+    """
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in list(value.values()):
+            yield from _strings_in(item)
+    elif isinstance(value, (list, tuple)):
+        for item in list(value):
+            yield from _strings_in(item)
 
 
 class WorkflowManager:
@@ -140,25 +133,35 @@ class WorkflowManager:
                 return node, wid
         return None, None
 
-    def credential_usage(self):
-        """Count the nodes referencing each credential ID.
+    def credential_usage(self, credential_ids):
+        """Count the nodes referencing each of ``credential_ids``.
 
-        Scans every working and deployed engine. A node present in both
-        engines of one workflow counts once. Returns {credential_id: count}.
+        A node references a credential when the credential's ID appears
+        anywhere in its config: IDs are random 128-bit hex strings, so a
+        match is a reference. Matching on config values rather than on the
+        node's property schema means nothing is asked of the node class
+        (some build their properties by probing devices), and a node whose
+        schema can't be read, or whose type isn't installed, still counts:
+        the delete guard fails closed.
+
+        Scans every working and deployed engine; a node present in both
+        engines of one workflow counts once. Returns {credential_id: count}
+        for the referenced IDs only.
         """
+        wanted = set(credential_ids)
+        if not wanted:
+            return {}
         with self.state_lock:
             engines = (list(self.working_engines.items())
                        + list(self.deployed_engines.items()))
-        seen = set()
-        usage = {}
+        references = set()
         for wid, engine in engines:
             for node in list(engine.nodes.values()):
-                for prop_name in _credential_property_names(node):
-                    cred_id = node.config.get(prop_name)
-                    key = (wid, node.id, prop_name)
-                    if isinstance(cred_id, str) and cred_id and key not in seen:
-                        seen.add(key)
-                        usage[cred_id] = usage.get(cred_id, 0) + 1
+                for cred_id in wanted.intersection(_strings_in(node.config)):
+                    references.add((wid, node.id, cred_id))
+        usage = {}
+        for _, _, cred_id in references:
+            usage[cred_id] = usage.get(cred_id, 0) + 1
         return usage
 
     def unique_workflow_name(self, desired_name, exclude_id=None):
