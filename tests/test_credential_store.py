@@ -41,6 +41,11 @@ class TestCredentialKey:
         token = Fernet(env_key).encrypt(b'x')
         assert resolver.get().decrypt(token) == b'x'
 
+    def test_non_ascii_env_key_is_a_credential_error(self, tmp_path):
+        resolver = CredentialKey(_key_file(tmp_path), {'PYNODE_CREDENTIAL_KEY': 'ключ-not-ascii'})
+        with pytest.raises(CredentialError, match='PYNODE_CREDENTIAL_KEY does not hold a valid Fernet key'):
+            resolver.get()
+
     def test_invalid_env_key_names_the_variable_not_the_value(self, tmp_path):
         resolver = CredentialKey(_key_file(tmp_path), {'PYNODE_CREDENTIAL_KEY': 'not-a-real-key-123'})
         with pytest.raises(CredentialError) as exc:
