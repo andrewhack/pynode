@@ -340,6 +340,8 @@ class SupervisionAnnotateNode(BaseNode):
                 return
 
             detections = to_sv(payload)
+            if detections is None:
+                return
             has_tracker_ids = detections.tracker_id is not None
             lookup = self._resolve_lookup(has_tracker_ids)
             annotators = self._ensure_annotators(lookup, frame_size(image))
