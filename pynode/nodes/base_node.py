@@ -61,6 +61,7 @@ from pynode.nodes.image_utils import process_image  # noqa: F401 (re-export)
 from pynode.nodes.info import Info  # noqa: F401 (re-export)
 from pynode.nodes.messages import MessageKeys, sort_msg_keys
 from pynode.nodes.pacing import FramePacer  # noqa: F401 (re-export)
+from pynode.credential_store import CredentialError  # noqa: F401 (re-export for nodes)
 
 # Sentinel so create_message() can distinguish "payload not given" from an
 # explicitly-passed payload=None (which must be included in the message).
@@ -207,6 +208,24 @@ class BaseNode:
             storage_dir = os.path.join(storage_dir, subdir)
         os.makedirs(storage_dir, exist_ok=True)
         return storage_dir
+
+    def get_credential(self, credential_id: Optional[str]) -> Dict[str, str]:
+        """Resolve a credential ID (the value of a 'credential' property).
+
+        Returns every field with secret fields decrypted, e.g. {'value': '...'}
+        for the core 'secret' type. Keep the result in memory only: never
+        write it into self.config, a message or a log line.
+
+        Raises:
+            CredentialError: no credential selected, no store available, or the
+                store cannot resolve it (not found, locked, wrong key).
+        """
+        if not credential_id:
+            raise CredentialError(f"{self.name}: no credential selected")
+        store = getattr(self._workflow_engine, 'credential_store', None)
+        if store is None:
+            raise CredentialError(f"{self.name}: no credential store available")
+        return store.resolve(credential_id)
 
     def report_error(self, error_msg: str):
         """

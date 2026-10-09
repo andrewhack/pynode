@@ -272,6 +272,39 @@
         </div>
     </div>
 
+    <!-- Credential manager: one overlay, shown/hidden by credentials.js.
+         Fields are built from the credential type; secret inputs always start
+         empty because the server never sends a secret back. -->
+    <div class="mqtt-service-modal" id="credential-dialog" style="display:none;">
+        <div class="mqtt-service-modal-content">
+            <div class="mqtt-service-modal-header">
+                <h3>Manage Credentials</h3>
+                <button class="mqtt-service-modal-close" type="button" onclick="window.closeCredentialDialog()">&times;</button>
+            </div>
+            <div class="mqtt-service-modal-body">
+                <input type="hidden" id="credential-id" value="">
+                <div class="property-group">
+                    <label class="property-label">Credential</label>
+                    <select class="property-select" id="credential-picker" onchange="window.onCredentialPick(this.value)"></select>
+                </div>
+                <div class="property-group">
+                    <label class="property-label">Name</label>
+                    <input type="text" class="property-input" id="credential-name" placeholder="My API token" autocomplete="off">
+                </div>
+                <div id="credential-fields"></div>
+                <div class="mqtt-test-result" id="credential-result" style="display:none;"></div>
+            </div>
+            <div class="mqtt-service-modal-footer">
+                <span></span>
+                <div class="mqtt-service-modal-actions">
+                    <button class="btn btn-danger" type="button" id="credential-delete-btn" style="display:none;" onclick="window.deleteCredential()">Delete</button>
+                    <button class="btn btn-secondary" type="button" onclick="window.closeCredentialDialog()">Cancel</button>
+                    <button class="btn btn-primary" type="button" onclick="window.saveCredential()">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- auth.js must load first (classic script, runs during parse) so its
          fetch wrapper covers every API call made by the module bundle -->
     <script src="js/auth.js"></script>

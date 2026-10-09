@@ -30,6 +30,10 @@ class WorkflowEngine:
         # their own workflow id via node._workflow_engine.workflow_id for
         # tagging things like debug messages.
         self.workflow_id = None
+        # Credential store used by BaseNode.get_credential(). Set by
+        # WorkflowManager.create_workflow_engine(); None for ad-hoc engines
+        # (e.g. in tests), where get_credential() raises CredentialError.
+        self.credential_store = None
     
     def register_node_type(self, node_class: Type[BaseNode]):
         """

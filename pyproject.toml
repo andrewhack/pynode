@@ -40,6 +40,7 @@ dependencies = [
     "waitress>=2.1",
     "numpy",
     "opencv-python",
+    "cryptography>=42",
 ]
 
 [project.urls]

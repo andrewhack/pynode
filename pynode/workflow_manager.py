@@ -37,11 +37,28 @@ BASE_DIR = config.CHECKOUT_DIR
 MAX_BACKUPS = 20
 
 
+def _strings_in(value):
+    """Every string in a node config value, walking nested dicts and lists.
+
+    Each level is copied before it is walked (a C-level copy under the GIL),
+    so a concurrent configure() cannot make the walk fail mid-iteration.
+    """
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in list(value.values()):
+            yield from _strings_in(item)
+    elif isinstance(value, (list, tuple)):
+        for item in list(value):
+            yield from _strings_in(item)
+
+
 class WorkflowManager:
     """All mutable workflow state for one application instance."""
 
     def __init__(self, workflows_dir=None, workflow_file=None,
-                 upload_base_dir=None, max_backups=MAX_BACKUPS):
+                 upload_base_dir=None, max_backups=MAX_BACKUPS,
+                 credential_store=None):
         # Multi-workflow state
         # Each workflow has its own working + deployed engine pair
         self.workflows = {}          # workflow_id -> { 'name': str, 'enabled': bool }
@@ -79,13 +96,20 @@ class WorkflowManager:
         self._debug_broadcast_running = False
         self._debug_broadcast_lock = threading.Lock()
 
+        # Encrypted credential store handed to every engine this manager
+        # creates, so nodes resolve credential IDs through their engine.
+        # None when the manager is built without one (e.g. in unit tests).
+        self.credential_store = credential_store
+
     # ------------------------------------------------------------------
     # Engine / workflow helpers
     # ------------------------------------------------------------------
 
     def create_workflow_engine(self):
         """Create a new WorkflowEngine with all node types registered."""
-        return node_registry.create_workflow_engine()
+        engine = node_registry.create_workflow_engine()
+        engine.credential_store = self.credential_store
+        return engine
 
     def get_working_engine(self, workflow_id=None):
         """Get working engine for a workflow, defaulting to active."""
@@ -108,6 +132,37 @@ class WorkflowManager:
             if node:
                 return node, wid
         return None, None
+
+    def credential_usage(self, credential_ids):
+        """Count the nodes referencing each of ``credential_ids``.
+
+        A node references a credential when the credential's ID appears
+        anywhere in its config: IDs are random 128-bit hex strings, so a
+        match is a reference. Matching on config values rather than on the
+        node's property schema means nothing is asked of the node class
+        (some build their properties by probing devices), and a node whose
+        schema can't be read, or whose type isn't installed, still counts:
+        the delete guard fails closed.
+
+        Scans every working and deployed engine; a node present in both
+        engines of one workflow counts once. Returns {credential_id: count}
+        for the referenced IDs only.
+        """
+        wanted = set(credential_ids)
+        if not wanted:
+            return {}
+        with self.state_lock:
+            engines = (list(self.working_engines.items())
+                       + list(self.deployed_engines.items()))
+        references = set()
+        for wid, engine in engines:
+            for node in list(engine.nodes.values()):
+                for cred_id in wanted.intersection(_strings_in(node.config)):
+                    references.add((wid, node.id, cred_id))
+        usage = {}
+        for _, _, cred_id in references:
+            usage[cred_id] = usage.get(cred_id, 0) + 1
+        return usage
 
     def unique_workflow_name(self, desired_name, exclude_id=None):
         """Ensure unique workflow name, appending (n) if needed."""

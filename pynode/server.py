@@ -23,6 +23,7 @@ from pynode.config import resolve_workflows_dir
 from pynode.api import register_blueprints
 from pynode.api.helpers import _json_error
 from pynode.api.uploads import ALLOWED_UPLOAD_SUBDIRS  # noqa: F401 (re-export)
+from pynode.credential_store import CREDENTIALS_FILE_NAME, CredentialStore
 from pynode.workflow_manager import BASE_DIR, MAX_BACKUPS, PKG_DIR, WorkflowManager
 
 logger = logging.getLogger(__name__)
@@ -83,10 +84,17 @@ def create_app(config=None):
     workflows_dir = cfg.pop('WORKFLOWS_DIR', None)
     if workflows_dir is None:
         workflows_dir = resolve_workflows_dir(cli_data_dir=data_dir)
+    # Per-app credential store: secrets referenced by ID from node config,
+    # encrypted in credentials.json next to workflow.json so it follows
+    # --data-dir. Nothing is read or written until first use.
+    credential_store = CredentialStore(os.path.join(workflows_dir, CREDENTIALS_FILE_NAME))
+    app.extensions['credential_store'] = credential_store
+
     manager = WorkflowManager(
         workflows_dir=workflows_dir,
         workflow_file=cfg.pop('WORKFLOW_FILE', None),
         upload_base_dir=cfg.pop('UPLOAD_BASE_DIR', None),
+        credential_store=credential_store,
     )
     app.extensions['workflow_manager'] = manager
     logger.info(f"Workflow data directory: {manager.workflows_dir}")
