@@ -232,6 +232,8 @@ class SupervisionZoneNode(BaseNode):
 
         try:
             detections = to_sv(payload)
+            if detections is None:
+                return
             mask = self.zone.trigger(detections) if len(detections) > 0 \
                 else np.zeros(0, dtype=bool)
 

@@ -117,6 +117,8 @@ class SupervisionSmootherNode(BaseNode):
 
         try:
             detections = to_sv(payload)
+            if detections is None:
+                return
 
             if detections.tracker_id is None and len(detections) > 0:
                 # DetectionsSmoother matches boxes by track id; without ids it
